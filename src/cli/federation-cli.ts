@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Command } from "commander";
 import { resolveStateDir } from "../config/paths.js";
+import { generateOrLoadFederationKeypair } from "../gateway/federation/federation-keypair.js";
+import { signMessage } from "../gateway/federation/federation-message.js";
 import {
   approvePeer,
   getPeer,
@@ -25,6 +27,11 @@ type FederationRequestOpts = GatewayRpcOpts & {
 type FederationApproveOpts = GatewayRpcOpts & { gatewayId: string; json?: boolean };
 type FederationRejectOpts = GatewayRpcOpts & { gatewayId: string; json?: boolean };
 type FederationRevokeOpts = GatewayRpcOpts & { gatewayId: string; json?: boolean };
+type FederationSendOpts = GatewayRpcOpts & {
+  intent: string;
+  payload?: string;
+  json?: boolean;
+};
 
 async function fetchFederationCard(gatewayUrl: string): Promise<unknown> {
   const url = new URL("/.well-known/openclaw-federation", gatewayUrl);
@@ -325,6 +332,150 @@ export function registerFederationCli(program: Command) {
         defaultRuntime.log(JSON.stringify({ status: "revoked", gatewayId }, null, 2));
       } else {
         defaultRuntime.log(info(`🗑️  Federation revoked: ${peer.displayName} (${gatewayId})`));
+      }
+    } catch (err) {
+      defaultRuntime.error(danger(String(err)));
+      defaultRuntime.exit(1);
+    }
+  });
+
+  addGatewayClientOptions(
+    federation
+      .command("send")
+      .description("Send a signed message to an approved federation peer")
+      .argument("<gatewayId>", "Gateway ID to send message to")
+      .requiredOption("--intent <intent>", "Intent type (ping, web-search)")
+      .option("--payload <json>", "JSON payload for the intent")
+      .option("--json", "Output JSON", false),
+  ).action(async (gatewayId: string, opts: FederationSendOpts) => {
+    try {
+      const stateDir = resolveStateDir();
+
+      // Get the peer record
+      const peer = await getPeer(stateDir, gatewayId);
+      if (!peer) {
+        throw new Error(`Peer ${gatewayId} not found`);
+      }
+
+      if (peer.status !== "approved") {
+        throw new Error(`Peer ${gatewayId} is not approved (status: ${peer.status})`);
+      }
+
+      // Check intent is in scope
+      if (!peer.scope.includes(opts.intent)) {
+        throw new Error(`Intent ${opts.intent} not in approved scope: ${peer.scope.join(", ")}`);
+      }
+
+      // Parse payload
+      let payload: object = {};
+      if (opts.payload) {
+        try {
+          payload = JSON.parse(opts.payload) as object;
+        } catch {
+          throw new Error("Invalid JSON payload");
+        }
+      }
+
+      // Load our keypair
+      const keypair = await generateOrLoadFederationKeypair(stateDir);
+
+      // Fetch our federation card to get our gateway ID
+      const localPort = process.env.OPENCLAW_GATEWAY_PORT ?? "18789";
+      const localUrl = `http://localhost:${localPort}`;
+      const card = await fetchFederationCard(localUrl);
+      if (typeof card !== "object" || card === null) {
+        throw new Error("Invalid federation card returned from local gateway");
+      }
+      const ourCard = card as Record<string, unknown>;
+      const ourGatewayId = String(ourCard.gatewayId);
+
+      // Generate nonce for reply
+      const nonce = randomUUID();
+      const replyTo = `${localUrl}/federation/reply/${nonce}`;
+
+      // Build message payload (everything except signature)
+      const timestamp = new Date().toISOString();
+      const messagePayload = {
+        fromGatewayId: ourGatewayId,
+        intent: opts.intent,
+        payload,
+        replyTo,
+        timestamp,
+        nonce,
+      };
+
+      // Sign the message
+      const signature = signMessage(keypair.privateKey, messagePayload);
+
+      // Build full message with signature
+      const fullMessage = {
+        ...messagePayload,
+        signature,
+      };
+
+      // Send message to peer
+      const messageUrl = new URL("/federation/message", peer.gatewayUrl);
+      const response = await fetch(messageUrl.toString(), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(fullMessage),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(
+          `Federation message failed: ${response.status} ${response.statusText}\n${errorBody}`,
+        );
+      }
+
+      const ackResponse = (await response.json()) as unknown;
+
+      if (!opts.json) {
+        defaultRuntime.log(info(`📤 Message sent to ${peer.displayName} (${gatewayId})`));
+        defaultRuntime.log(theme.muted(`Intent: ${opts.intent}`));
+        defaultRuntime.log(theme.muted(`Waiting for reply (30s timeout)...`));
+      }
+
+      // Poll for reply on our own gateway
+      const { getReply, clearReply } =
+        await import("../gateway/federation/federation-message-handler.js");
+
+      const startTime = Date.now();
+      const timeoutMs = 30_000;
+      let reply: unknown;
+
+      while (Date.now() - startTime < timeoutMs) {
+        reply = getReply(nonce);
+        if (reply) {
+          clearReply(nonce);
+          break;
+        }
+        await new Promise((resolve) => {
+          setTimeout(resolve, 500);
+        });
+      }
+
+      if (!reply) {
+        throw new Error("No reply received within 30 seconds");
+      }
+
+      if (opts.json) {
+        defaultRuntime.log(
+          JSON.stringify(
+            {
+              sent: fullMessage,
+              ack: ackResponse,
+              reply,
+            },
+            null,
+            2,
+          ),
+        );
+      } else {
+        defaultRuntime.log(info("📥 Reply received:"));
+        defaultRuntime.log(JSON.stringify(reply, null, 2));
       }
     } catch (err) {
       defaultRuntime.error(danger(String(err)));

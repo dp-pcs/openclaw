@@ -36,6 +36,10 @@ import {
 import type { FederationCard } from "./federation/federation-card.js";
 import { handleFederationWellKnown } from "./federation/federation-handler.js";
 import {
+  handleFederationMessage,
+  handleFederationReply,
+} from "./federation/federation-message-handler.js";
+import {
   handleFederationPeersList,
   handleFederationPeersRevoke,
 } from "./federation/federation-peers-handler.js";
@@ -858,6 +862,26 @@ export function createGatewayHttpServer(opts: {
                 trustedProxies,
                 allowRealIpFallback,
               );
+            }
+            return false;
+          },
+        },
+        {
+          name: "federation-message",
+          run: async () => {
+            if (requestPath === "/federation/message" && stateDir && federationCard) {
+              return await handleFederationMessage(req, res, stateDir, federationCard.gatewayId);
+            }
+            return false;
+          },
+        },
+        {
+          name: "federation-reply",
+          run: async () => {
+            const match = requestPath.match(/^\/federation\/reply\/([^/]+)$/);
+            if (match) {
+              const nonce = decodeURIComponent(match[1]);
+              return await handleFederationReply(req, res, nonce);
             }
             return false;
           },
