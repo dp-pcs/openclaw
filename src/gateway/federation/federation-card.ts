@@ -19,13 +19,14 @@ export type FederationCard = {
  * The federation card is returned by the /.well-known/openclaw-federation endpoint.
  */
 export function buildFederationCard(config: OpenClawConfig, publicKey: string): FederationCard {
-  // Derive a stable gateway ID from hostname
-  // In future phases, this could use a config-defined stable ID
-  const gatewayId = os.hostname().toLowerCase();
+  // Derive a stable gateway ID from hostname + port
+  // In future phases, this should use a config-defined stable ID (e.g. owner email)
+  const port = process.env.OPENCLAW_GATEWAY_PORT ?? "18789";
+  const hostname = os.hostname().toLowerCase();
+  const gatewayId = port === "18789" ? hostname : `${hostname}:${port}`;
 
-  // Use hostname as display name
-  // In future phases, this could be configurable
-  const displayName = os.hostname();
+  // Use hostname (+ port if non-default) as display name
+  const displayName = port === "18789" ? os.hostname() : `${os.hostname()} (port ${port})`;
 
   // For Phase 0, capabilities are static
   // In future phases, this will be derived from installed plugins and config

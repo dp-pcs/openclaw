@@ -204,6 +204,22 @@ export async function handleFederationApprove(
     // Record the nonce
     await recordNonce(stateDir, body.fromGatewayId, body.nonce);
 
+    // Find matching outbound pending peer and approve it
+    // (This is the callback from the remote gateway saying "I approved your request")
+    const { loadPeers, savePeers } = await import("./federation-peers.js");
+    const peers = await loadPeers(stateDir);
+    const outboundPeer = Object.values(peers).find(
+      (p) =>
+        (p.initiatedBy === "us" && p.gatewayUrl === body.fromGatewayUrl) ||
+        (p.initiatedBy === "us" && p.gatewayId === body.fromGatewayId),
+    );
+    if (outboundPeer) {
+      outboundPeer.status = "approved";
+      outboundPeer.approvedAt = new Date().toISOString();
+      outboundPeer.publicKey = String(body.fromPublicKey ?? outboundPeer.publicKey);
+      await savePeers(stateDir, peers);
+    }
+
     // Send notification about approval
     const notificationText = `✅ Federation approved by ${body.fromDisplayName} (${body.fromGatewayId})`;
     requestHeartbeatNow({

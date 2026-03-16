@@ -112,9 +112,15 @@ export function registerFederationCli(program: Command) {
       for (const peer of peerList) {
         const statusIcon =
           peer.status === "approved" ? "✅" : peer.status === "rejected" ? "❌" : "⏳";
-        const initiator = peer.initiatedBy === "us" ? "outbound" : "inbound";
+        // Once approved, show "mutual" — direction of initiation is handshake metadata only
+        const direction =
+          peer.status === "approved"
+            ? "mutual"
+            : peer.initiatedBy === "us"
+              ? "outbound"
+              : "inbound";
         defaultRuntime.log(
-          `${statusIcon} ${peer.displayName} (${peer.gatewayId}) - ${peer.status} [${initiator}]`,
+          `${statusIcon} ${peer.displayName} (${peer.gatewayId}) - ${peer.status} [${direction}]`,
         );
         defaultRuntime.log(theme.muted(`   URL: ${peer.gatewayUrl}`));
         defaultRuntime.log(theme.muted(`   Scope: ${peer.scope.join(", ")}`));
@@ -143,7 +149,9 @@ export function registerFederationCli(program: Command) {
       const stateDir = resolveStateDir();
 
       // Fetch our own federation card
-      const card = await fetchFederationCard("http://localhost:18789");
+      const localPort = process.env.OPENCLAW_GATEWAY_PORT ?? "18789";
+      const localUrl = `http://localhost:${localPort}`;
+      const card = await fetchFederationCard(localUrl);
       if (typeof card !== "object" || card === null) {
         throw new Error("Invalid federation card returned from local gateway");
       }
@@ -156,7 +164,7 @@ export function registerFederationCli(program: Command) {
       const requestBody = {
         fromGatewayId: ourCard.gatewayId,
         fromDisplayName: ourCard.displayName,
-        fromGatewayUrl: "http://localhost:18789", // TODO: should be configurable
+        fromGatewayUrl: localUrl,
         fromPublicKey: ourCard.publicKey,
         proposedScope,
         message: opts.message,
@@ -164,16 +172,28 @@ export function registerFederationCli(program: Command) {
         nonce: randomUUID(),
       };
 
+      // Fetch target gateway's federation card to get their real identity
+      const targetCard = await fetchFederationCard(opts.gateway);
+      const theirCard =
+        typeof targetCard === "object" && targetCard !== null
+          ? (targetCard as Record<string, unknown>)
+          : {};
+      const theirGatewayId =
+        typeof theirCard.gatewayId === "string" ? theirCard.gatewayId : opts.gateway;
+      const theirDisplayName =
+        typeof theirCard.displayName === "string" ? theirCard.displayName : opts.gateway;
+      const theirPublicKey = typeof theirCard.publicKey === "string" ? theirCard.publicKey : "";
+
       // Send request to target gateway
       const response = await postFederationRequest(opts.gateway, requestBody);
 
-      // Save as pending peer
+      // Save as pending peer using their real identity
       const { addPendingPeer } = await import("../gateway/federation/federation-peers.js");
       await addPendingPeer(stateDir, {
-        gatewayId: String(opts.gateway), // We'll use the URL as gatewayId for now
-        displayName: String(opts.gateway),
+        gatewayId: theirGatewayId,
+        displayName: theirDisplayName,
         gatewayUrl: opts.gateway,
-        publicKey: "", // We'll get this from their response or well-known
+        publicKey: theirPublicKey,
         scope: proposedScope,
         status: "pending",
         initiatedBy: "us",
@@ -220,7 +240,9 @@ export function registerFederationCli(program: Command) {
       // If they initiated, send approval callback
       if (peer.initiatedBy === "them") {
         // Fetch our own federation card
-        const card = await fetchFederationCard("http://localhost:18789");
+        const localPort = process.env.OPENCLAW_GATEWAY_PORT ?? "18789";
+        const localUrl = `http://localhost:${localPort}`;
+        const card = await fetchFederationCard(localUrl);
         if (typeof card !== "object" || card === null) {
           throw new Error("Invalid federation card returned from local gateway");
         }
@@ -229,13 +251,15 @@ export function registerFederationCli(program: Command) {
         const approvalBody = {
           fromGatewayId: ourCard.gatewayId,
           fromDisplayName: ourCard.displayName,
-          fromGatewayUrl: "http://localhost:18789",
+          fromGatewayUrl: localUrl,
           fromPublicKey: ourCard.publicKey,
           proposedScope: peer.scope,
           timestamp: new Date().toISOString(),
           nonce: randomUUID(),
         };
 
+        // Send approval callback to their /federation/approve endpoint
+        // This signals "I approved you" and lets them flip their pending→approved
         await postFederationApprove(peer.gatewayUrl, approvalBody);
       }
 
