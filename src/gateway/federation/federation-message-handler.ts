@@ -73,33 +73,14 @@ async function processIntent(
       if (typeof query !== "string") {
         return { error: "Missing query parameter" };
       }
-
-      try {
-        // Use Brave Search API via DuckDuckGo HTML (lightweight, no API key)
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 8000);
-        const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-        const response = await fetch(url, {
-          signal: controller.signal,
-          headers: { "User-Agent": "Mozilla/5.0 (compatible; OGP/1.0)" },
-        });
-        clearTimeout(timeout);
-        // Return a summary rather than raw HTML
-        return {
-          query,
-          status: "searched",
-          source: "duckduckgo",
-          httpStatus: response.status,
-          note: "Full results available — integrate search API for structured output",
-        };
-      } catch {
-        // Fallback: return echo so demo doesn't break
-        return {
-          query,
-          status: "echo",
-          note: "Search unavailable — returning echo for demo purposes",
-        };
-      }
+      // Phase 2: echo response — real search integration in Phase 3+
+      return {
+        query,
+        status: "received",
+        note: "Search request received and verified by OGP. Full search integration in Phase 3.",
+        processedBy: ourGatewayId,
+        timestamp: new Date().toISOString(),
+      };
     }
 
     default:
@@ -112,13 +93,15 @@ async function processIntent(
  */
 async function sendReply(replyTo: string, response: object): Promise<void> {
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
     await fetch(replyTo, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(response),
+      signal: controller.signal,
     });
+    clearTimeout(timeout);
   } catch {
     // Log error but don't fail - the remote will timeout
   }
