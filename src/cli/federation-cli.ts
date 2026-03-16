@@ -438,19 +438,26 @@ export function registerFederationCli(program: Command) {
         defaultRuntime.log(theme.muted(`Waiting for reply (30s timeout)...`));
       }
 
-      // Poll for reply on our own gateway
-      const { getReply, clearReply } =
-        await import("../gateway/federation/federation-message-handler.js");
-
+      // Poll our own gateway's HTTP endpoint for the reply
+      const replyPollUrl = `${localUrl}/federation/reply/${nonce}`;
       const startTime = Date.now();
       const timeoutMs = 30_000;
       let reply: unknown;
 
       while (Date.now() - startTime < timeoutMs) {
-        reply = getReply(nonce);
-        if (reply) {
-          clearReply(nonce);
-          break;
+        try {
+          const pollResponse = await fetch(replyPollUrl);
+          if (pollResponse.ok) {
+            const pollData = (await pollResponse.json()) as { reply?: unknown };
+            if (pollData.reply !== undefined) {
+              reply = pollData.reply;
+              // Clear it
+              await fetch(replyPollUrl, { method: "DELETE" }).catch(() => {});
+              break;
+            }
+          }
+        } catch {
+          // Gateway not ready yet, keep polling
         }
         await new Promise((resolve) => {
           setTimeout(resolve, 500);

@@ -1,4 +1,4 @@
-import { createSign, createVerify } from "node:crypto";
+import { sign, verify, createPrivateKey, createPublicKey } from "node:crypto";
 
 /**
  * Canonicalize JSON payload for signing
@@ -29,23 +29,15 @@ function canonicalizeJson(obj: unknown): string {
  * Returns base64url-encoded signature
  */
 export function signMessage(privateKey: string, payload: object): string {
-  // Deserialize the base64url-encoded DER private key
+  // privateKey is base64url-encoded DER (PKCS8) — import as KeyObject
   const keyBuffer = Buffer.from(privateKey, "base64url");
+  const keyObject = createPrivateKey({ key: keyBuffer, format: "der", type: "pkcs8" });
 
   // Create canonical JSON representation
   const canonical = canonicalizeJson(payload);
 
-  // Sign with Ed25519
-  const sign = createSign("SHA512");
-  sign.update(canonical);
-  sign.end();
-
-  const signature = sign.sign({
-    key: keyBuffer,
-    format: "der",
-    type: "pkcs8",
-  });
-
+  // Ed25519 requires one-shot sign() not createSign() in Node v25+
+  const signature = sign(null, Buffer.from(canonical), keyObject);
   return signature.toString("base64url");
 }
 
@@ -62,19 +54,9 @@ export function verifyMessage(publicKey: string, payload: object, signature: str
     // Create canonical JSON representation
     const canonical = canonicalizeJson(payload);
 
-    // Verify with Ed25519
-    const verify = createVerify("SHA512");
-    verify.update(canonical);
-    verify.end();
-
-    return verify.verify(
-      {
-        key: keyBuffer,
-        format: "der",
-        type: "spki",
-      },
-      signatureBuffer,
-    );
+    // Ed25519 requires one-shot verify() not createVerify() in Node v25+
+    const keyObject = createPublicKey({ key: keyBuffer, format: "der", type: "spki" });
+    return verify(null, Buffer.from(canonical), keyObject, signatureBuffer);
   } catch {
     return false;
   }
