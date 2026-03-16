@@ -88,6 +88,15 @@ const entries: SubCliEntry[] = [
     },
   },
   {
+    name: "federation",
+    description: "Federation management (peer gateways)",
+    hasSubcommands: true,
+    register: async (program) => {
+      const mod = await import("../federation-cli.js");
+      mod.registerFederationCli(program);
+    },
+  },
+  {
     name: "models",
     description: "Discover, scan, and configure models",
     hasSubcommands: true,

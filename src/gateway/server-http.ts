@@ -1,5 +1,3 @@
-import type { TlsOptions } from "node:tls";
-import type { WebSocketServer } from "ws";
 import { createHash } from "node:crypto";
 import {
   createServer as createHttpServer,
@@ -8,15 +6,14 @@ import {
   type ServerResponse,
 } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import type { CanvasHostHandler } from "../canvas-host/server.js";
-import type { createSubsystemLogger } from "../logging/subsystem.js";
-import type { FederationCard } from "./federation/federation-card.js";
-import type { ReadinessChecker } from "./server/readiness.js";
-import type { GatewayWsClient } from "./server/ws-types.js";
+import type { TlsOptions } from "node:tls";
+import type { WebSocketServer } from "ws";
 import { handleSlackHttpRequest } from "../../extensions/slack/src/http/index.js";
 import { resolveAgentAvatar } from "../agents/identity-avatar.js";
 import { CANVAS_WS_PATH, handleA2uiHttpRequest } from "../canvas-host/a2ui.js";
+import type { CanvasHostHandler } from "../canvas-host/server.js";
 import { loadConfig } from "../config/config.js";
+import type { createSubsystemLogger } from "../logging/subsystem.js";
 import { safeEqualSecret } from "../security/secret-equal.js";
 import {
   AUTH_RATE_LIMIT_SCOPE_HOOK_AUTH,
@@ -36,7 +33,16 @@ import {
   handleControlUiHttpRequest,
   type ControlUiRootState,
 } from "./control-ui.js";
+import type { FederationCard } from "./federation/federation-card.js";
 import { handleFederationWellKnown } from "./federation/federation-handler.js";
+import {
+  handleFederationPeersList,
+  handleFederationPeersRevoke,
+} from "./federation/federation-peers-handler.js";
+import {
+  handleFederationRequest,
+  handleFederationApprove,
+} from "./federation/federation-request-handler.js";
 import { applyHookMappings } from "./hooks-mapping.js";
 import {
   extractHookToken,
@@ -73,6 +79,8 @@ import {
   type PluginHttpRequestHandler,
   type PluginRoutePathContext,
 } from "./server/plugins-http.js";
+import type { ReadinessChecker } from "./server/readiness.js";
+import type { GatewayWsClient } from "./server/ws-types.js";
 import { handleToolsInvokeHttpRequest } from "./tools-invoke-http.js";
 
 type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
@@ -734,6 +742,7 @@ export function createGatewayHttpServer(opts: {
   getReadiness?: ReadinessChecker;
   tlsOptions?: TlsOptions;
   federationCard?: FederationCard;
+  stateDir?: string;
 }): HttpServer {
   const {
     canvasHost,
@@ -753,6 +762,7 @@ export function createGatewayHttpServer(opts: {
     rateLimiter,
     getReadiness,
     federationCard,
+    stateDir,
   } = opts;
   const httpServer: HttpServer = opts.tlsOptions
     ? createHttpsServer(opts.tlsOptions, (req, res) => {
@@ -795,6 +805,59 @@ export function createGatewayHttpServer(opts: {
           run: () => {
             if (requestPath === "/.well-known/openclaw-federation" && federationCard) {
               return handleFederationWellKnown(req, res, federationCard);
+            }
+            return false;
+          },
+        },
+        {
+          name: "federation-request",
+          run: async () => {
+            if (requestPath === "/federation/request" && stateDir) {
+              return await handleFederationRequest(req, res, stateDir);
+            }
+            return false;
+          },
+        },
+        {
+          name: "federation-approve",
+          run: async () => {
+            if (requestPath === "/federation/approve" && stateDir) {
+              return await handleFederationApprove(req, res, stateDir);
+            }
+            return false;
+          },
+        },
+        {
+          name: "federation-peers-list",
+          run: async () => {
+            if (requestPath === "/federation/peers" && stateDir) {
+              return await handleFederationPeersList(
+                req,
+                res,
+                stateDir,
+                resolvedAuth,
+                trustedProxies,
+                allowRealIpFallback,
+              );
+            }
+            return false;
+          },
+        },
+        {
+          name: "federation-peers-revoke",
+          run: async () => {
+            const match = requestPath.match(/^\/federation\/peers\/([^/]+)$/);
+            if (match && stateDir) {
+              const gatewayId = decodeURIComponent(match[1]);
+              return await handleFederationPeersRevoke(
+                req,
+                res,
+                gatewayId,
+                stateDir,
+                resolvedAuth,
+                trustedProxies,
+                allowRealIpFallback,
+              );
             }
             return false;
           },
