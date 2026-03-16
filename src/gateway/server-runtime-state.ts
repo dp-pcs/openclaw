@@ -12,6 +12,7 @@ import type { ResolvedGatewayAuth } from "./auth.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import type { ControlUiRootState } from "./control-ui.js";
 import { buildFederationCard } from "./federation/federation-card.js";
+import { loadIntentRegistry } from "./federation/federation-intent-registry.js";
 import { generateOrLoadFederationKeypair } from "./federation/federation-keypair.js";
 import type { HooksConfigResolved } from "./hooks.js";
 import { isLoopbackHost, resolveGatewayListenHosts } from "./net.js";
@@ -94,10 +95,15 @@ export async function createGatewayRuntimeState(params: {
   chatAbortControllers: Map<string, ChatAbortControllerEntry>;
   toolEventRecipients: ReturnType<typeof createToolEventRecipientRegistry>;
 }> {
-  // Generate or load federation keypair
+  // Generate or load federation keypair and intent registry
   const stateDir = resolveStateDir(process.env);
   const federationKeypair = await generateOrLoadFederationKeypair(stateDir);
-  const federationCard = buildFederationCard(params.cfg, federationKeypair.publicKey);
+  const intentRegistry = await loadIntentRegistry(stateDir);
+  const federationCard = buildFederationCard(
+    params.cfg,
+    federationKeypair.publicKey,
+    intentRegistry,
+  );
 
   let canvasHost: CanvasHostHandler | null = null;
   if (params.canvasHostEnabled) {

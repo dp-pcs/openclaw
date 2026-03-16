@@ -1,6 +1,8 @@
+import { execSync } from "node:child_process";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readJsonBody } from "../hooks.js";
 import { MAX_PREAUTH_PAYLOAD_BYTES } from "../server-constants.js";
+import { loadIntentRegistry } from "./federation-intent-registry.js";
 import { verifyMessage } from "./federation-message.js";
 import { getPeer, hasNonce, recordNonce } from "./federation-peers.js";
 
@@ -54,37 +56,56 @@ function validateFederationMessage(body: unknown): body is FederationMessageBody
 
 /**
  * Process a message intent and return a response
+ * NOTE: Command execution uses execSync from registry-configured commands only.
+ * Commands are stored in the registry, not received from message payloads.
  */
 async function processIntent(
   intent: string,
-  payload: object,
+  payload: Record<string, unknown>,
   ourGatewayId: string,
+  stateDir: string,
 ): Promise<object> {
-  switch (intent) {
-    case "ping":
-      return {
-        status: "ok",
-        gatewayId: ourGatewayId,
-        timestamp: new Date().toISOString(),
-      };
+  const registry = await loadIntentRegistry(stateDir);
+  const handler = registry.handlers[intent] ?? registry.custom[intent];
 
-    case "web-search": {
-      const query = (payload as { query?: string }).query;
-      if (typeof query !== "string") {
-        return { error: "Missing query parameter" };
+  if (!handler && intent !== "ping") {
+    return { error: `Intent ${intent} not implemented`, code: 501 };
+  }
+
+  switch (handler?.type ?? "builtin") {
+    case "builtin":
+      // ping handled here
+      if (intent === "ping") {
+        return {
+          status: "ok",
+          gatewayId: ourGatewayId,
+          timestamp: new Date().toISOString(),
+        };
       }
-      // Phase 2: echo response — real search integration in Phase 3+
-      return {
-        query,
-        status: "received",
-        note: "Search request received and verified by OGP. Full search integration in Phase 3.",
-        processedBy: ourGatewayId,
-        timestamp: new Date().toISOString(),
-      };
+      return { error: "Unknown builtin", code: 501 };
+
+    case "command": {
+      // Substitute {param} placeholders with payload values
+      let cmd = handler.command!;
+      for (const [key, value] of Object.entries(payload)) {
+        cmd = cmd.replace(`{${key}}`, String(value));
+      }
+      // Execute command and return output
+      try {
+        const output = execSync(cmd, { timeout: 10000, encoding: "utf8" });
+        // Try to parse as JSON, otherwise return as text
+        try {
+          return JSON.parse(output) as object;
+        } catch {
+          return { output: output.trim() };
+        }
+      } catch (err) {
+        return { error: `Command failed: ${String(err)}` };
+      }
     }
 
     default:
-      return { error: `Unknown intent: ${intent}` };
+      return { error: `Handler type ${handler?.type} not yet supported`, code: 501 };
   }
 }
 
@@ -160,6 +181,24 @@ export async function handleFederationMessage(
       return true;
     }
 
+    // Apply scopeParams enforcement
+    const peerScopeParams = peer.scopeParams?.[body.intent];
+    if (peerScopeParams) {
+      const enforcedPayload = { ...body.payload } as Record<string, unknown>;
+      for (const [param, rule] of Object.entries(peerScopeParams)) {
+        if (rule.mode === "enforce") {
+          enforcedPayload[param] = rule.value;
+        } else if (rule.mode === "restrict") {
+          const sent = enforcedPayload[param];
+          if (rule.allowed && !rule.allowed.includes(String(sent))) {
+            // Default to first allowed value
+            enforcedPayload[param] = rule.allowed[0];
+          }
+        }
+      }
+      body.payload = enforcedPayload;
+    }
+
     // Verify timestamp
     if (!isValidTimestamp(body.timestamp)) {
       res.statusCode = 400;
@@ -205,7 +244,12 @@ export async function handleFederationMessage(
     // Process intent asynchronously and send reply
     setImmediate(async () => {
       try {
-        const response = await processIntent(body.intent, body.payload, ourGatewayId);
+        const response = await processIntent(
+          body.intent,
+          body.payload as Record<string, unknown>,
+          ourGatewayId,
+          stateDir,
+        );
         await sendReply(body.replyTo, response);
       } catch {
         // Silent failure - remote will timeout

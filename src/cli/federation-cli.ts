@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { Command } from "commander";
 import { resolveStateDir } from "../config/paths.js";
+import {
+  loadIntentRegistry,
+  registerIntentHandler,
+  removeIntentHandler,
+} from "../gateway/federation/federation-intent-registry.js";
 import { generateOrLoadFederationKeypair } from "../gateway/federation/federation-keypair.js";
 import { signMessage } from "../gateway/federation/federation-message.js";
 import {
@@ -483,6 +488,113 @@ export function registerFederationCli(program: Command) {
       } else {
         defaultRuntime.log(info("📥 Reply received:"));
         defaultRuntime.log(JSON.stringify(reply, null, 2));
+      }
+    } catch (err) {
+      defaultRuntime.error(danger(String(err)));
+      defaultRuntime.exit(1);
+    }
+  });
+
+  addGatewayClientOptions(
+    federation
+      .command("intents")
+      .description("List all registered intent handlers")
+      .option("--json", "Output JSON", false),
+  ).action(async (opts: { json?: boolean }) => {
+    try {
+      const stateDir = resolveStateDir();
+      const registry = await loadIntentRegistry(stateDir);
+
+      if (opts.json) {
+        defaultRuntime.log(JSON.stringify(registry, null, 2));
+        return;
+      }
+
+      const handlers = Object.entries(registry.handlers);
+      const custom = Object.entries(registry.custom);
+
+      if (handlers.length === 0 && custom.length === 0) {
+        defaultRuntime.log(info("No intent handlers registered"));
+        return;
+      }
+
+      if (handlers.length > 0) {
+        defaultRuntime.log(info("Intent Handlers:"));
+        for (const [intent, handler] of handlers) {
+          defaultRuntime.log(`  ${intent} → ${handler.type}`);
+          if (handler.command) {
+            defaultRuntime.log(theme.muted(`    Command: ${handler.command}`));
+          }
+          if (handler.skillName) {
+            defaultRuntime.log(theme.muted(`    Skill: ${handler.skillName}`));
+          }
+        }
+        defaultRuntime.log("");
+      }
+
+      if (custom.length > 0) {
+        defaultRuntime.log(info("Custom Intents:"));
+        for (const [intent, def] of custom) {
+          defaultRuntime.log(`  ${intent}`);
+          defaultRuntime.log(theme.muted(`    Description: ${def.description}`));
+          defaultRuntime.log(theme.muted(`    Command: ${def.command}`));
+        }
+      }
+    } catch (err) {
+      defaultRuntime.error(danger(String(err)));
+      defaultRuntime.exit(1);
+    }
+  });
+
+  addGatewayClientOptions(
+    federation
+      .command("register-intent")
+      .description("Register an intent handler")
+      .argument("<intent>", "Intent name")
+      .requiredOption(
+        "--command <cmd>",
+        "Command template to execute (use {param} for substitutions)",
+      )
+      .option("--json", "Output JSON", false),
+  ).action(async (intent: string, opts: { command: string; json?: boolean }) => {
+    try {
+      const stateDir = resolveStateDir();
+
+      await registerIntentHandler(stateDir, intent, {
+        type: "command",
+        command: opts.command,
+      });
+
+      if (opts.json) {
+        defaultRuntime.log(
+          JSON.stringify({ intent, handler: { type: "command", command: opts.command } }, null, 2),
+        );
+      } else {
+        defaultRuntime.log(info(`✅ Registered intent: ${intent}`));
+        defaultRuntime.log(theme.muted(`Command: ${opts.command}`));
+      }
+    } catch (err) {
+      defaultRuntime.error(danger(String(err)));
+      defaultRuntime.exit(1);
+    }
+  });
+
+  addGatewayClientOptions(
+    federation
+      .command("remove-intent")
+      .description("Remove an intent handler")
+      .argument("<intent>", "Intent name")
+      .option("--json", "Output JSON", false),
+  ).action(async (intent: string, opts: { json?: boolean }) => {
+    try {
+      const stateDir = resolveStateDir();
+
+      await removeIntentHandler(stateDir, intent);
+
+      if (opts.json) {
+        defaultRuntime.log(JSON.stringify({ status: "removed", intent }, null, 2));
+      } else {
+        defaultRuntime.log(info(`🗑️  Removed intent: ${intent}`));
       }
     } catch (err) {
       defaultRuntime.error(danger(String(err)));

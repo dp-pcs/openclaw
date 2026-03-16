@@ -4,12 +4,19 @@ import path from "node:path";
 export type PeerStatus = "pending" | "approved" | "rejected";
 export type PeerInitiator = "us" | "them";
 
+export type ScopeParamRule = {
+  mode: "enforce" | "restrict" | "passthrough";
+  value?: string; // for enforce
+  allowed?: string[]; // for restrict
+};
+
 export type PeerRecord = {
   gatewayId: string;
   displayName: string;
   gatewayUrl: string;
   publicKey: string;
   scope: string[];
+  scopeParams?: Record<string, Record<string, ScopeParamRule>>;
   status: PeerStatus;
   initiatedBy: PeerInitiator;
   createdAt: string;
