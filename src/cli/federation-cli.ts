@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
+import os from "node:os";
 import type { Command } from "commander";
 import { resolveStateDir } from "../config/paths.js";
+import { execFileUtf8 } from "../daemon/exec-file.js";
 import {
   loadIntentRegistry,
   registerIntentHandler,
@@ -36,6 +38,12 @@ type FederationSendOpts = GatewayRpcOpts & {
   intent: string;
   payload?: string;
   json?: boolean;
+};
+type FederationScheduleOpts = GatewayRpcOpts & {
+  peer: string;
+  duration?: number;
+  week?: string;
+  at?: string;
 };
 
 async function fetchFederationCard(gatewayUrl: string): Promise<unknown> {
@@ -602,6 +610,225 @@ export function registerFederationCli(program: Command) {
         defaultRuntime.log(JSON.stringify({ status: "removed", intent }, null, 2));
       } else {
         defaultRuntime.log(info(`🗑️  Removed intent: ${intent}`));
+      }
+    } catch (err) {
+      defaultRuntime.error(danger(String(err)));
+      defaultRuntime.exit(1);
+    }
+  });
+
+  addGatewayClientOptions(
+    federation
+      .command("schedule")
+      .description("Schedule a meeting with a federation peer")
+      .requiredOption("--peer <gatewayId>", "Gateway ID of the peer to schedule with")
+      .option("--duration <minutes>", "Meeting duration in minutes", "30")
+      .option("--week <week>", 'Week to search: "this week" or "next week"', "next week")
+      .option("--at <time>", "Preferred time (e.g., 11am, 2pm)"),
+  ).action(async (opts: FederationScheduleOpts) => {
+    try {
+      const stateDir = resolveStateDir();
+
+      // 1. Look up peer
+      const peer = await getPeer(stateDir, opts.peer);
+      if (!peer) {
+        throw new Error(`Peer ${opts.peer} not found`);
+      }
+      if (peer.status !== "approved") {
+        throw new Error(`Peer ${opts.peer} is not approved (status: ${peer.status})`);
+      }
+
+      // 2. Fetch peer's federation card to check calendar-read capability
+      const peerCard = await fetchFederationCard(peer.gatewayUrl);
+      if (typeof peerCard !== "object" || peerCard === null) {
+        throw new Error("Invalid federation card from peer");
+      }
+      const cardData = peerCard as Record<string, unknown>;
+      const capabilities =
+        Array.isArray(cardData.capabilities) &&
+        cardData.capabilities.every((c) => typeof c === "string")
+          ? cardData.capabilities
+          : [];
+      if (!capabilities.includes("calendar-read")) {
+        throw new Error("Peer does not advertise calendar-read. Ask them to register this intent.");
+      }
+
+      // 3. Build time window
+      const duration = Number.parseInt(opts.duration ?? "30", 10);
+      const now = new Date();
+      const denver = "America/Denver";
+      let startDate: Date;
+      if (opts.week === "this week") {
+        const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon
+        const daysUntilMonday = dayOfWeek === 0 ? 1 : 1 - dayOfWeek;
+        startDate = new Date(now);
+        startDate.setDate(now.getDate() + daysUntilMonday);
+      } else {
+        // next week
+        const dayOfWeek = now.getDay();
+        const daysUntilNextMonday = dayOfWeek === 0 ? 1 : (1 - dayOfWeek + 7) % 7;
+        startDate = new Date(now);
+        startDate.setDate(now.getDate() + daysUntilNextMonday + 7);
+      }
+      startDate.setHours(9, 0, 0, 0);
+      const endDate = new Date(startDate);
+      endDate.setDate(startDate.getDate() + 4); // Friday
+      endDate.setHours(17, 0, 0, 0);
+
+      // 4. Send calendar-read message
+      const keypair = await generateOrLoadFederationKeypair(stateDir);
+      const localPort = process.env.OPENCLAW_GATEWAY_PORT ?? "18789";
+      const localUrl = `http://localhost:${localPort}`;
+      const card = await fetchFederationCard(localUrl);
+      if (typeof card !== "object" || card === null) {
+        throw new Error("Invalid federation card from local gateway");
+      }
+      const ourCard = card as Record<string, unknown>;
+      const ourGatewayId = String(ourCard.gatewayId);
+
+      const nonce = randomUUID();
+      const replyTo = `${localUrl}/federation/reply/${nonce}`;
+      const timestamp = new Date().toISOString();
+      const messagePayload = {
+        fromGatewayId: ourGatewayId,
+        intent: "calendar-read",
+        payload: {
+          startTime: startDate.toISOString(),
+          endTime: endDate.toISOString(),
+          duration,
+        },
+        replyTo,
+        timestamp,
+        nonce,
+      };
+
+      const signature = signMessage(keypair.privateKey, messagePayload);
+      const fullMessage = { ...messagePayload, signature };
+
+      const messageUrl = new URL("/federation/message", peer.gatewayUrl);
+      const response = await fetch(messageUrl.toString(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(fullMessage),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(
+          `Federation message failed: ${response.status} ${response.statusText}\n${errorBody}`,
+        );
+      }
+
+      defaultRuntime.log(info("📤 Requesting available slots..."));
+
+      // 5. Poll for reply
+      const replyPollUrl = `${localUrl}/federation/reply/${nonce}`;
+      const startTime = Date.now();
+      const timeoutMs = 30_000;
+      let reply: unknown;
+
+      while (Date.now() - startTime < timeoutMs) {
+        try {
+          const pollResponse = await fetch(replyPollUrl);
+          if (pollResponse.ok) {
+            const pollData = (await pollResponse.json()) as { reply?: unknown };
+            if (pollData.reply !== undefined && pollData.reply !== null) {
+              reply = pollData.reply;
+              await fetch(replyPollUrl, { method: "DELETE" }).catch(() => {});
+              break;
+            }
+          }
+        } catch {
+          // Gateway not ready yet, keep polling
+        }
+        await new Promise((resolve) => {
+          setTimeout(resolve, 500);
+        });
+      }
+
+      if (!reply) {
+        throw new Error("No reply received within 30 seconds");
+      }
+
+      // Parse reply to get slots
+      const replyData = reply as Record<string, unknown>;
+      const slots = Array.isArray(replyData.slots) ? replyData.slots : [];
+      if (slots.length === 0) {
+        throw new Error("No available slots returned");
+      }
+
+      // 6. Pick slot
+      let chosenSlot: { start: string; end: string };
+      if (opts.at) {
+        // Find slot closest to preferred time
+        const preferredHour = opts.at.toLowerCase().includes("am")
+          ? Number.parseInt(opts.at.replace("am", "").trim(), 10)
+          : Number.parseInt(opts.at.replace("pm", "").trim(), 10) + 12;
+        let closestSlot = slots[0] as { start: string; end: string };
+        let minDiff = Number.POSITIVE_INFINITY;
+        for (const slot of slots) {
+          const slotData = slot as { start: string; end: string };
+          const slotStart = new Date(slotData.start);
+          const diff = Math.abs(slotStart.getHours() - preferredHour);
+          if (diff < minDiff) {
+            minDiff = diff;
+            closestSlot = slotData;
+          }
+        }
+        chosenSlot = closestSlot;
+      } else {
+        chosenSlot = slots[0] as { start: string; end: string };
+      }
+
+      // 7. Run calendar-write script
+      const scriptPath = `${os.homedir()}/Documents/GitHub/openclaw-federation/scripts/gwb-calendar-write.sh`;
+      const peerEmail = peer.email ?? "";
+      const peerName = peer.displayName;
+      const eventTitle = `Meeting with ${peerName}`;
+
+      if (!peerEmail) {
+        defaultRuntime.log(
+          theme.muted("⚠️  No email on record for this peer — event created without invite"),
+        );
+      }
+
+      const result = await execFileUtf8("bash", [
+        scriptPath,
+        chosenSlot.start,
+        chosenSlot.end,
+        eventTitle,
+        peerEmail,
+        peerName,
+      ]);
+
+      if (result.code !== 0) {
+        throw new Error(`Calendar write failed: ${result.stderr}`);
+      }
+
+      // 8. Print summary
+      const startDate_formatted = new Date(chosenSlot.start);
+      const endDate_formatted = new Date(chosenSlot.end);
+      const dayFormatter = new Intl.DateTimeFormat("en-US", {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+        timeZone: denver,
+      });
+      const timeFormatter = new Intl.DateTimeFormat("en-US", {
+        hour: "numeric",
+        minute: "2-digit",
+        timeZone: denver,
+        timeZoneName: "short",
+      });
+
+      defaultRuntime.log("");
+      defaultRuntime.log(info("✅ Meeting scheduled!"));
+      defaultRuntime.log(`With: ${peerName} (${peerEmail})`);
+      defaultRuntime.log(
+        `When: ${dayFormatter.format(startDate_formatted)} ${timeFormatter.format(startDate_formatted)} – ${timeFormatter.format(endDate_formatted)}`,
+      );
+      if (peerEmail) {
+        defaultRuntime.log(`Calendar invite sent to: ${peerEmail}`);
       }
     } catch (err) {
       defaultRuntime.error(danger(String(err)));
