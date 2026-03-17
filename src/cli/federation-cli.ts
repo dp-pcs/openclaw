@@ -460,7 +460,8 @@ export function registerFederationCli(program: Command) {
           const pollResponse = await fetch(replyPollUrl);
           if (pollResponse.ok) {
             const pollData = (await pollResponse.json()) as { reply?: unknown };
-            if (pollData.reply !== undefined) {
+            // null = not yet available, non-null = reply ready
+            if (pollData.reply !== undefined && pollData.reply !== null) {
               reply = pollData.reply;
               // Clear it
               await fetch(replyPollUrl, { method: "DELETE" }).catch(() => {});
