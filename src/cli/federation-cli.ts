@@ -195,6 +195,7 @@ export function registerFederationCli(program: Command) {
       const theirDisplayName =
         typeof theirCard.displayName === "string" ? theirCard.displayName : opts.gateway;
       const theirPublicKey = typeof theirCard.publicKey === "string" ? theirCard.publicKey : "";
+      const theirEmail = typeof theirCard.email === "string" ? theirCard.email : undefined;
 
       // Send request to target gateway
       const response = await postFederationRequest(opts.gateway, requestBody);
@@ -204,6 +205,7 @@ export function registerFederationCli(program: Command) {
       await addPendingPeer(stateDir, {
         gatewayId: theirGatewayId,
         displayName: theirDisplayName,
+        ...(theirEmail ? { email: theirEmail } : {}),
         gatewayUrl: opts.gateway,
         publicKey: theirPublicKey,
         scope: proposedScope,

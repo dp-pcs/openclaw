@@ -9,6 +9,7 @@ export type FederationCard = {
   gatewayId: string;
   publicKey: string;
   displayName: string;
+  email?: string; // Owner's email — used by peers for calendar invites, messages, etc.
   version: string;
   capabilities: FederationCapability[];
   rateHints: {
@@ -34,6 +35,15 @@ export function buildFederationCard(
   // Use hostname (+ port if non-default) as display name
   const displayName = port === "18789" ? os.hostname() : `${os.hostname()} (port ${port})`;
 
+  // Email from config if set — used by peers for calendar invites, attendee fields, etc.
+  // Configure via openclaw.json: { "federation": { "email": "you@example.com", "displayName": "Your Name" } }
+  const email =
+    (config as Record<string, unknown> & { federation?: { email?: string; displayName?: string } })
+      ?.federation?.email ?? undefined;
+  const configuredDisplayName = (
+    config as Record<string, unknown> & { federation?: { displayName?: string } }
+  )?.federation?.displayName;
+
   // Capabilities from registry if available, otherwise fallback to ["ping"]
   const capableIntents = registry ? getCapableIntents(registry) : ["ping"];
 
@@ -57,7 +67,8 @@ export function buildFederationCard(
   return {
     gatewayId,
     publicKey,
-    displayName,
+    displayName: configuredDisplayName ?? displayName,
+    ...(email ? { email } : {}),
     version,
     capabilities,
     rateHints: {

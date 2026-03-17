@@ -13,6 +13,7 @@ export type ScopeParamRule = {
 export type PeerRecord = {
   gatewayId: string;
   displayName: string;
+  email?: string; // Peer's email from their federation card — used for calendar invites etc.
   gatewayUrl: string;
   publicKey: string;
   scope: string[];
