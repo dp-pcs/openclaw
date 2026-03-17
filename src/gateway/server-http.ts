@@ -808,7 +808,7 @@ export function createGatewayHttpServer(opts: {
           name: "federation-well-known",
           run: () => {
             if (requestPath === "/.well-known/openclaw-federation" && federationCard) {
-              return handleFederationWellKnown(req, res, federationCard);
+              return handleFederationWellKnown(req, res, federationCard, stateDir);
             }
             return false;
           },
