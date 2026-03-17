@@ -46,7 +46,10 @@ export async function handleFederationWellKnown(
   if (method === "HEAD") {
     res.end();
   } else {
-    res.end(JSON.stringify(liveCard));
+    // Strip email from public card — only shared post-trust via approval callback
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { email: _email, ...publicCard } = liveCard as typeof liveCard & { email?: string };
+    res.end(JSON.stringify(publicCard));
   }
 
   return true;

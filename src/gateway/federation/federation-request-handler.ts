@@ -10,6 +10,7 @@ type FederationRequestBody = {
   fromDisplayName: string;
   fromGatewayUrl: string;
   fromPublicKey: string;
+  fromEmail?: string; // Only shared during trust establishment, never on public well-known
   proposedScope: string[];
   message?: string;
   timestamp: string;
@@ -102,10 +103,11 @@ export async function handleFederationRequest(
       return true;
     }
 
-    // Create pending peer record
+    // Create pending peer record — email stored here, never on public well-known
     const peerRecord: PeerRecord = {
       gatewayId: body.fromGatewayId,
       displayName: body.fromDisplayName,
+      ...(body.fromEmail ? { email: body.fromEmail } : {}),
       gatewayUrl: body.fromGatewayUrl,
       publicKey: body.fromPublicKey,
       scope: body.proposedScope,
@@ -217,6 +219,10 @@ export async function handleFederationApprove(
       outboundPeer.status = "approved";
       outboundPeer.approvedAt = new Date().toISOString();
       outboundPeer.publicKey = String(body.fromPublicKey ?? outboundPeer.publicKey);
+      // Store their email from the approval callback — only shared post-trust
+      if (body.fromEmail && !outboundPeer.email) {
+        outboundPeer.email = body.fromEmail;
+      }
       await savePeers(stateDir, peers);
     }
 

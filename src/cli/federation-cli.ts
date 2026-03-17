@@ -172,7 +172,8 @@ export function registerFederationCli(program: Command) {
       // Parse scope
       const proposedScope = opts.scope.split(",").map((s) => s.trim());
 
-      // Build request body
+      // Build request body — email NOT included here (public knock)
+      // Email is only exchanged in the approval callback after trust is established
       const requestBody = {
         fromGatewayId: ourCard.gatewayId,
         fromDisplayName: ourCard.displayName,
@@ -262,11 +263,14 @@ export function registerFederationCli(program: Command) {
         }
         const ourCard = card as Record<string, unknown>;
 
+        // Approval callback includes our email — this is post-trust, safe to share
+        const ourEmail = typeof ourCard.email === "string" ? ourCard.email : undefined;
         const approvalBody = {
           fromGatewayId: ourCard.gatewayId,
           fromDisplayName: ourCard.displayName,
           fromGatewayUrl: localUrl,
           fromPublicKey: ourCard.publicKey,
+          ...(ourEmail ? { fromEmail: ourEmail } : {}),
           proposedScope: peer.scope,
           timestamp: new Date().toISOString(),
           nonce: randomUUID(),
