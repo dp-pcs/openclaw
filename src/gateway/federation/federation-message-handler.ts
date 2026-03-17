@@ -251,8 +251,10 @@ export async function handleFederationMessage(
           stateDir,
         );
         await sendReply(body.replyTo, response);
-      } catch {
-        // Silent failure - remote will timeout
+      } catch (err) {
+        // Log error so we can debug; send error reply so CLI doesn't just timeout
+        console.error(`[ogp] intent processing failed: ${String(err)}`);
+        await sendReply(body.replyTo, { error: String(err) }).catch(() => {});
       }
     });
 
