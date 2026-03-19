@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import os from "node:os";
+import { confirm } from "@clack/prompts";
 import type { Command } from "commander";
 import { resolveStateDir } from "../config/paths.js";
 import { execFileUtf8 } from "../daemon/exec-file.js";
@@ -294,6 +295,65 @@ export function registerFederationCli(program: Command) {
         defaultRuntime.log(JSON.stringify(updatedPeer, null, 2));
       } else {
         defaultRuntime.log(info(`✅ Federation approved: ${peer.displayName} (${gatewayId})`));
+
+        // Ask if user wants to make this two-way
+        defaultRuntime.log(
+          info(
+            `\n  One-way: ${peer.displayName} can check your calendar to schedule meetings with you, but you can't check theirs.\n` +
+              `  Two-way: You can both check each other's calendars — useful if you'll be scheduling meetings in both directions.\n`,
+          ),
+        );
+        const makeTwoWay = await confirm({
+          message: "Make this two-way?",
+          initialValue: false,
+        });
+
+        if (makeTwoWay) {
+          try {
+            // Send federation request back to them with the same scope
+            const localPort = process.env.OPENCLAW_GATEWAY_PORT ?? "18789";
+            const localUrl = `http://localhost:${localPort}`;
+            const card = await fetchFederationCard(localUrl);
+            if (typeof card !== "object" || card === null) {
+              throw new Error("Invalid federation card returned from local gateway");
+            }
+            const ourCard = card as Record<string, unknown>;
+
+            const requestBody = {
+              fromGatewayId: ourCard.gatewayId,
+              fromDisplayName: ourCard.displayName,
+              fromGatewayUrl: localUrl,
+              fromPublicKey: ourCard.publicKey,
+              proposedScope: peer.scope,
+              timestamp: new Date().toISOString(),
+              nonce: randomUUID(),
+            };
+
+            await postFederationRequest(peer.gatewayUrl, requestBody);
+
+            // Update the peer record to track that we also initiated
+            const peers = await loadPeers(stateDir);
+            const existingPeer = peers[gatewayId];
+            if (existingPeer) {
+              // Mark that we've now initiated too (making it bidirectional)
+              existingPeer.initiatedBy = "them"; // Keep original, but we've now sent back
+              await import("../gateway/federation/federation-peers.js").then(({ savePeers }) =>
+                savePeers(stateDir, peers),
+              );
+            }
+
+            defaultRuntime.log(info("✅ Two-way federation request sent"));
+            defaultRuntime.log(
+              theme.muted(
+                `Sent federation request to ${peer.displayName} with scope: ${peer.scope.join(", ")}`,
+              ),
+            );
+          } catch (err) {
+            defaultRuntime.error(danger(`Failed to send two-way request: ${String(err)}`));
+          }
+        } else {
+          defaultRuntime.log(info("One-way trust maintained"));
+        }
       }
     } catch (err) {
       defaultRuntime.error(danger(String(err)));
@@ -666,9 +726,10 @@ export function registerFederationCli(program: Command) {
       } else {
         // next week
         const dayOfWeek = now.getDay();
-        const daysUntilNextMonday = dayOfWeek === 0 ? 1 : (1 - dayOfWeek + 7) % 7;
+        // Days until next Monday: for Sun->1, Mon->7, Tue->6, Wed->5, Thu->4, Fri->3, Sat->2
+        const daysUntilNextMonday = dayOfWeek === 0 ? 1 : 8 - dayOfWeek;
         startDate = new Date(now);
-        startDate.setDate(now.getDate() + daysUntilNextMonday + 7);
+        startDate.setDate(now.getDate() + daysUntilNextMonday);
       }
       startDate.setHours(9, 0, 0, 0);
       const endDate = new Date(startDate);

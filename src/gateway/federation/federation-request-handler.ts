@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { resolveAgentMainSessionKey } from "../../config/sessions/main-session.js";
 import { requestHeartbeatNow } from "../../infra/heartbeat-wake.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { readJsonBody } from "../hooks.js";
@@ -121,7 +122,7 @@ export async function handleFederationRequest(
 
     // Send notification to gateway owner via heartbeat wake
     const scopeList = body.proposedScope.join(", ");
-    const notificationText = `🤝 Federation request from ${body.fromDisplayName} (${body.fromGatewayId})\nProposed scope: ${scopeList}\n\nReply with: openclaw federation approve ${body.fromGatewayId}\nor: openclaw federation reject ${body.fromGatewayId}`;
+    const notificationText = `🔔 New federation request from ${body.fromDisplayName} (${body.fromGatewayUrl}). They want access to: ${scopeList}. Reply "federation approve ${body.fromGatewayId}" to approve or "federation reject ${body.fromGatewayId}" to reject.`;
 
     // Use requestHeartbeatNow to trigger a notification
     requestHeartbeatNow({
@@ -133,7 +134,7 @@ export async function handleFederationRequest(
     // This ensures the notification appears in the next prompt
     try {
       enqueueSystemEvent(notificationText, {
-        sessionKey: "gateway-system",
+        sessionKey: resolveAgentMainSessionKey({ agentId: "main" }),
         contextKey: "federation",
       });
     } catch {
@@ -235,7 +236,7 @@ export async function handleFederationApprove(
 
     try {
       enqueueSystemEvent(notificationText, {
-        sessionKey: "gateway-system",
+        sessionKey: resolveAgentMainSessionKey({ agentId: "main" }),
         contextKey: "federation",
       });
     } catch {
