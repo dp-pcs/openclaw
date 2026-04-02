@@ -302,6 +302,32 @@ export function resolveHookTargetAgentId(
   return hooksConfig.agentPolicy.defaultAgentId;
 }
 
+/**
+ * Resolve agent routing from bindings config.
+ * Given an agentId, look up its binding and return the channel and accountId (to).
+ * Returns null if no binding found.
+ */
+export function resolveAgentBindingRouting(
+  cfg: OpenClawConfig,
+  agentId: string | undefined,
+): { channel: string; accountId?: string } | null {
+  const raw = agentId?.trim();
+  if (!raw) {
+    return null;
+  }
+  const normalized = normalizeAgentId(raw);
+  const bindings = cfg.bindings ?? [];
+  for (const binding of bindings) {
+    if (binding.agentId === normalized) {
+      return {
+        channel: binding.match.channel,
+        accountId: binding.match.accountId,
+      };
+    }
+  }
+  return null;
+}
+
 export function isHookAgentAllowed(
   hooksConfig: HooksConfigResolved,
   agentId: string | undefined,

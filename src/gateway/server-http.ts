@@ -63,6 +63,7 @@ import {
   normalizeHookDispatchSessionKey,
   resolveHookSessionKey,
   resolveHookTargetAgentId,
+  resolveAgentBindingRouting,
   resolveHookChannel,
   resolveHookDeliver,
 } from "./hooks.js";
@@ -581,6 +582,18 @@ export function createHooksRequestHandler(
         return true;
       }
       const targetAgentId = resolveHookTargetAgentId(hooksConfig, normalized.value.agentId);
+
+      // Resolve channel and to from agent bindings if agentId is provided
+      let resolvedChannel = normalized.value.channel;
+      let resolvedTo = normalized.value.to;
+      if (targetAgentId) {
+        const bindingRoute = resolveAgentBindingRouting(loadConfig(), targetAgentId);
+        if (bindingRoute) {
+          resolvedChannel = bindingRoute.channel as typeof normalized.value.channel;
+          resolvedTo = bindingRoute.accountId ?? normalized.value.to;
+        }
+      }
+
       const replayKey = buildHookReplayCacheKey({
         pathKey: "agent",
         token,
@@ -593,8 +606,8 @@ export function createHooksRequestHandler(
           name: normalized.value.name,
           wakeMode: normalized.value.wakeMode,
           deliver: normalized.value.deliver,
-          channel: normalized.value.channel,
-          to: normalized.value.to ?? null,
+          channel: resolvedChannel,
+          to: resolvedTo ?? null,
           model: normalized.value.model ?? null,
           thinking: normalized.value.thinking ?? null,
           timeoutSeconds: normalized.value.timeoutSeconds ?? null,
@@ -611,6 +624,8 @@ export function createHooksRequestHandler(
       });
       const runId = dispatchAgentHook({
         ...normalized.value,
+        channel: resolvedChannel,
+        to: resolvedTo,
         idempotencyKey,
         sessionKey: normalizedDispatchSessionKey,
         agentId: targetAgentId,
