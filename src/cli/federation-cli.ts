@@ -31,6 +31,7 @@ type FederationRequestOpts = GatewayRpcOpts & {
   scope: string;
   message?: string;
   json?: boolean;
+  peerId?: string;
 };
 type FederationApproveOpts = GatewayRpcOpts & { gatewayId: string; json?: boolean };
 type FederationRejectOpts = GatewayRpcOpts & { gatewayId: string; json?: boolean };
@@ -48,12 +49,24 @@ type FederationScheduleOpts = GatewayRpcOpts & {
 };
 
 async function fetchFederationCard(gatewayUrl: string): Promise<unknown> {
-  const url = new URL("/.well-known/openclaw-federation", gatewayUrl);
-  const response = await fetch(url.toString());
-  if (!response.ok) {
-    throw new Error(`Failed to fetch federation card: ${response.status} ${response.statusText}`);
+  const url = new URL("/.well-known/ogp", gatewayUrl);
+  try {
+    const response = await fetch(url.toString());
+    if (!response.ok) {
+      throw new Error(
+        `Gateway returned ${response.status} ${response.statusText} from /.well-known/ogp`,
+      );
+    }
+    return await response.json();
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("fetch")) {
+      throw new Error(
+        `Unable to reach /.well-known/ogp endpoint at ${gatewayUrl}. Check that the gateway is running and accessible.`,
+        { cause: err },
+      );
+    }
+    throw err;
   }
-  return await response.json();
 }
 
 async function postFederationRequest(
@@ -164,6 +177,7 @@ export function registerFederationCli(program: Command) {
       .requiredOption("--gateway <url>", "Target gateway URL")
       .requiredOption("--scope <scopes>", "Comma-separated list of requested scopes")
       .option("--message <text>", "Optional message to include with the request")
+      .option("--peer-id <peerId>", "Expected peer ID for security verification (optional)")
       .option("--json", "Output JSON", false),
   ).action(async (opts: FederationRequestOpts) => {
     try {
@@ -206,6 +220,22 @@ export function registerFederationCli(program: Command) {
         typeof theirCard.displayName === "string" ? theirCard.displayName : opts.gateway;
       const theirPublicKey = typeof theirCard.publicKey === "string" ? theirCard.publicKey : "";
       const theirEmail = typeof theirCard.email === "string" ? theirCard.email : undefined;
+
+      // Verify peer ID if provided (security pin)
+      if (opts.peerId && opts.peerId !== theirGatewayId) {
+        throw new Error(
+          `Peer ID mismatch: expected '${opts.peerId}' but got '${theirGatewayId}' from /.well-known/ogp`,
+        );
+      }
+
+      // Display resolved information before sending
+      if (!opts.json) {
+        defaultRuntime.log(info("🔍 Resolved peer information:"));
+        defaultRuntime.log(theme.muted(`  Display Name: ${theirDisplayName}`));
+        defaultRuntime.log(theme.muted(`  Peer ID: ${theirGatewayId}`));
+        defaultRuntime.log(theme.muted(`  Gateway URL: ${opts.gateway}`));
+        defaultRuntime.log("");
+      }
 
       // Send request to target gateway
       const response = await postFederationRequest(opts.gateway, requestBody);
